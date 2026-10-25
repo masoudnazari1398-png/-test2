@@ -5,7 +5,7 @@ import time
 from streamlit_autorefresh import st_autorefresh
 
 st.set_page_config(
-    page_title="BTC Live Radar (Official Binance API)",
+    page_title="BTC Live Radar (OKX API)",
     layout="wide"
 )
 
@@ -16,45 +16,58 @@ st_autorefresh(
 )
 
 
-# ================= تابع کش‌شده ارتباط با API بایننس =================
+# ================= تابع کش‌شده ارتباط با API صرافی OKX =================
 @st.cache_data(ttl=10, show_spinner=False)
-def _fetch_binance_klines_cached(symbol="BTCUSDT", interval="5m", limit=100):
-    """دریافت داده‌های کندل از API رسمی بایننس"""
-    url = "https://api.binance.com/api/v3/klines"
-    params = {"symbol": symbol, "interval": interval, "limit": limit}
+def _fetch_okx_klines_cached(symbol="BTC-USDT", bar="5m", limit=100):
+    """دریافت داده‌های کندل از API عمومی و بدون تحریم OKX"""
+    url = "https://www.okx.com/api/v5/market/candles"
+    params = {"instId": symbol, "bar": bar, "limit": limit}
     try:
         response = requests.get(url, params=params, timeout=10)
         if response.status_code == 200:
-            return response.json(), None
+            res_json = response.json()
+            if res_json.get("code") == "0":
+                return res_json.get("data"), None
+            else:
+                return None, f"خطای پاسخ OKX: {res_json.get('msg')}"
         else:
-            return None, f"خطای پاسخ سرور بایننس: HTTP {response.status_code}"
+            return None, f"خطای سرور: HTTP {response.status_code}"
     except requests.exceptions.RequestException as e:
         return None, f"خطای اتصال به شبکه: {e}"
 
 
 # ================= توابع پردازش داده =================
 def get_binance_klines_direct(symbol="BTCUSDT", interval="5m", limit=100):
-    data, error = _fetch_binance_klines_cached(symbol, interval, limit)
+    # تبدیل نام‌ایستگاه به فرمت OKX (مثلاً BTCUSDT به BTC-USDT)
+    okx_symbol = "BTC-USDT" if "BTC" in symbol else symbol
+    
+    # تبدیل تایم‌فریم‌های بایننس به فرمت OKX
+    bar_mapping = {"5m": "5m", "10m": "10m", "15m": "15m", "1h": "1H"}
+    bar = bar_mapping.get(interval, "5m")
+
+    data, error = _fetch_okx_klines_cached(okx_symbol, bar, limit)
     st.session_state["binance_api_error"] = error
 
     if data is None:
         return None
 
     try:
+        # ساختار داده‌های OKX: [timestamp, open, high, low, close, volume, ...]
         columns = [
-            "time", "open", "high", "low", "close", "volume",
-            "close_time", "quote_volume", "trades",
-            "taker_base", "taker_quote", "ignore"
+            "time", "open", "high", "low", "close", 
+            "volume", "volCcy", "volCcyQuote", "confirm"
         ]
-        df = pd.DataFrame(data, columns=columns)
+        df = pd.DataFrame(data, columns=columns[:len(data[0])])
 
         for col in ["open", "high", "low", "close", "volume"]:
             df[col] = pd.to_numeric(df[col], errors="raise")
 
+        # OKX داده‌ها را از جدید به قدیم برمی‌گرداند؛ برای محاسبات تکنیکال معکوس می‌کنیم (قدیم به جدید)
+        df = df.iloc[::-1].reset_index(drop=True)
         return df
 
     except (ValueError, TypeError, KeyError) as exc:
-        st.session_state["binance_api_error"] = f"خطا در پردازش داده‌های بایننس: {exc}"
+        st.session_state["binance_api_error"] = f"خطا در پردازش داده‌ها: {exc}"
         return None
 
 
@@ -183,7 +196,7 @@ def monitor_btc_ichimoku_direct():
 
 
 def check_btc_unusual_volume_direct():
-    """رادار پایش حجم غیرمتعارف و کندل‌های پوشا روی API رسمی بایننس"""
+    """رادار پایش حجم غیرمتعارف و کندل‌های پوشا روی API صرافی OKX"""
     volume_alerts = []
 
     for tf in ["5m", "10m", "15m"]:
@@ -228,13 +241,13 @@ def check_btc_unusual_volume_direct():
 
 # ================= رابط کاربری Streamlit =================
 
-st.title("🛰️ رادار رسمی بایننس: حجم‌های غیرمتعارف و ایچیموکو بیت‌کوین")
+st.title("🛰️ رادار لایو بازار: حجم‌های غیرمتعارف و ایچیموکو بیت‌کوین")
 st.caption(f"به‌روزرسانی خودکار زنده (۳۰ ثانیه) | زمان سیستم: {time.strftime('%H:%M:%S')}")
 
 btc_data = monitor_btc_ichimoku_direct()
 
 if btc_data is None:
-    st.error("❌ دریافت داده از API بایننس ناموفق بود.")
+    st.error("❌ دریافت داده از API صرافی ناموفق بود.")
     api_error = st.session_state.get("binance_api_error", "جزئیات خطا در دسترس نیست.")
     st.warning(f"جزئیات فنی: {api_error}")
 else:
@@ -259,7 +272,6 @@ else:
             unsafe_allow_html=True
         )
 
-    # نمودار خطی روند قیمت اخیر به عنوان جایگزین مینی‌چارت
     st.line_chart(btc_data['recent_prices'])
 
     st.markdown("---")
