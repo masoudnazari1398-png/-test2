@@ -16,13 +16,24 @@ st_autorefresh(
 )
 
 
-# ================= توابع ارتباط مستقیم با API بایننس =================
-
-
+# ================= تابع کش‌شده ارتباط با API بایننس =================
 @st.cache_data(ttl=10, show_spinner=False)
+def _fetch_binance_klines_cached(symbol="BTCUSDT", interval="5m", limit=100):
+    """دریافت داده‌های کندل از API رسمی بایننس"""
+    url = "https://api.binance.com/api/v3/klines"
+    params = {"symbol": symbol, "interval": interval, "limit": limit}
+    try:
+        response = requests.get(url, params=params, timeout=10)
+        if response.status_code == 200:
+            return response.json(), None
+        else:
+            return None, f"خطای پاسخ سرور بایننس: HTTP {response.status_code}"
+    except requests.exceptions.RequestException as e:
+        return None, f"خطای اتصال به شبکه: {e}"
 
+
+# ================= توابع پردازش داده =================
 def get_binance_klines_direct(symbol="BTCUSDT", interval="5m", limit=100):
-    """دریافت کندل از OKX با حفظ سازگاری با کد قبلی."""
     data, error = _fetch_binance_klines_cached(symbol, interval, limit)
     st.session_state["binance_api_error"] = error
 
@@ -43,9 +54,7 @@ def get_binance_klines_direct(symbol="BTCUSDT", interval="5m", limit=100):
         return df
 
     except (ValueError, TypeError, KeyError) as exc:
-        st.session_state["binance_api_error"] = (
-            f"خطا در پردازش داده‌های OKX: {exc}"
-        )
+        st.session_state["binance_api_error"] = f"خطا در پردازش داده‌های بایننس: {exc}"
         return None
 
 
@@ -91,7 +100,6 @@ def count_flat_candles(series):
 # ================= بخش محاسبات فنی =================
 
 def monitor_btc_ichimoku_direct():
-    # دریافت داده برای ایچیموکو از API بایننس (تایم‌فریم ۱۵ دقیقه)
     df_btc = get_binance_klines_direct("BTCUSDT", "15m", limit=100)
     if df_btc is None or df_btc.empty:
         return None
@@ -100,7 +108,6 @@ def monitor_btc_ichimoku_direct():
     prev_close = df_btc['close'].iloc[-2]
     change_pct = ((current_price - prev_close) / prev_close) * 100
 
-    # استخراج نوسان قیمت‌های اخیر جهت رسم مینی‌نمودار در کارت متریک جدید
     recent_prices = df_btc['close'].tail(15).tolist()
 
     # محاسبات ایچیموکو
@@ -195,19 +202,14 @@ def check_btc_unusual_volume_direct():
         current_close = current_candle['close']
         current_open = current_candle['open']
 
-        # ۳ کندل قبل از کندل جاری
         prev_candles = df_btc.iloc[-4:-1]
-
         avg_prev_volume = prev_candles['volume'].mean()
         prev_max_high = prev_candles['high'].max()
         prev_min_low = prev_candles['low'].min()
 
         volume_ratio = current_volume / avg_prev_volume if avg_prev_volume > 0 else 0
 
-        # شرط حجم غیرمتعارف (حداقل ۳ برابر میانگین قبلی)
         is_volume_explosive = volume_ratio >= 3.0
-
-        # شرط پوشش کامل نوسان ۳ کندل قبلی (Engulfing)
         is_price_engulfing = (current_high >= prev_max_high) and (current_low <= prev_min_low)
 
         direction = "🟢 صعودی (پمپ حجم)" if current_close >= current_open else "🔴 نزولی (دامپ حجم)"
@@ -229,29 +231,20 @@ def check_btc_unusual_volume_direct():
 st.title("🛰️ رادار رسمی بایننس: حجم‌های غیرمتعارف و ایچیموکو بیت‌کوین")
 st.caption(f"به‌روزرسانی خودکار زنده (۳۰ ثانیه) | زمان سیستم: {time.strftime('%H:%M:%S')}")
 
-# دریافت زنده داده‌ها از API مستقیم بایننس
 btc_data = monitor_btc_ichimoku_direct()
 
 if btc_data is None:
     st.error("❌ دریافت داده از API بایننس ناموفق بود.")
     api_error = st.session_state.get("binance_api_error", "جزئیات خطا در دسترس نیست.")
     st.warning(f"جزئیات فنی: {api_error}")
-    st.info(
-        "این برنامه روی سرور Streamlit Cloud اجرا می‌شود؛ بنابراین فیلترشکن کامپیوتر شما روی اتصال سرور اثر ندارد. "
-        "اگر endpointهای رسمی همگی مسدود یا غیرقابل‌دسترسی باشند، باید برنامه را از محیط دیگری مانند VPS اجرا کنیم."
-    )
 else:
-    # ۱. بخش کارت‌های وضعیت لایو بیت‌کوین (با استفاده از ویژگی‌های مدرن st.metric)
     col1, col2, col3 = st.columns(3)
     with col1:
-        # استفاده از پارامترهای جدید chart_data و border در st.metric بر اساس مستندات فرستاده شده
         st.metric(
             label="قیمت لحظه‌ای بیت‌کوین (BTC/USDT)",
             value=f"${btc_data['price']:,}",
             delta=f"{btc_data['change_pct']}%",
-            border=True,
-            chart_data=btc_data['recent_prices'],
-            chart_type="line"
+            border=True
         )
     with col2:
         st.metric(
@@ -260,13 +253,15 @@ else:
             border=True
         )
     with col3:
-        risk_color = "red" if "VERY HIGH" in btc_data['risk_level'] else "green" if "LOW" in btc_data[
-            'risk_level'] else "orange"
+        risk_color = "red" if "VERY HIGH" in btc_data['risk_level'] else "green" if "LOW" in btc_data['risk_level'] else "orange"
         st.markdown(
             f"سطح ریسک بازار: <span style='color:{risk_color}; font-weight:bold;'>{btc_data['risk_level']}</span>",
-            unsafe_allow_html=True)
+            unsafe_allow_html=True
+        )
 
-    # ۲. رادار تشخیص حجم‌های ناگهانی و پوششی
+    # نمودار خطی روند قیمت اخیر به عنوان جایگزین مینی‌چارت
+    st.line_chart(btc_data['recent_prices'])
+
     st.markdown("---")
     st.subheader("🔥 رادار حجم‌های غیرمتعارف و انفجاری بیت‌کوین (5m - 10m - 15m)")
 
@@ -296,7 +291,6 @@ else:
         else:
             st.success("✅ حجم معاملات بیت‌کوین در تایم‌فریم‌های کوتاه‌مدت (۵، ۱۰ و ۱۵ دقیقه) کاملاً آرام و نرمال است.")
 
-    # ۳. وضعیت خطوط و فلت‌های ایچیموکو
     st.markdown("---")
     st.subheader("📊 محاسبات لایو فلت‌های ایچیموکو بیت‌کوین (تایم‌فریم 15 دقیقه)")
 
