@@ -281,8 +281,8 @@ else:
     with col3:
         st.metric(label="ارزیابی ریسک", value=btc_data['risk_level'])
 
-    # نمایش نمودار روند قیمت اخیر به شکلی مرتب
-    with st.exparger(label="📈 نمایش روند قیمت اخیر (۱۵ کندل آخر)", expanded=False) if hasattr(st, 'expander') else st.container():
+    # نمایش روند قیمت اخیر درون expander اصلاح‌شده
+    with st.expander(label="📈 نمایش روند قیمت اخیر (۱۵ کندل آخر)", expanded=False):
         st.line_chart(btc_data['recent_prices'])
 
     st.markdown("---")
@@ -307,7 +307,7 @@ else:
 
     st.markdown("---")
     
-    # بخش ایچیموکو در کارهای جداگانه و مرتب
+    # بخش ایچیموکو
     st.subheader("📊 وضعیت خطوط کلیدی ایچیموکو (تایم‌فریم ۱۵ دقیقه)")
 
     ich_col1, ich_col2, ich_col3, ich_col4 = st.columns(4)
