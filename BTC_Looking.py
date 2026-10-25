@@ -324,4 +324,8 @@ else:
     st.info(f"💡 **تحلیل ترکیبی ابر و خطوط:** {btc_data['ichimoku_summary']}")
     
     if "بسیار بالا" in btc_data['risk_level']:
-        st
+        st.error(btc_data['message'])
+    elif "امن" in btc_data['risk_level']:
+        st.success(btc_data['message'])
+    else:
+        st.warning(btc_data['message'])
