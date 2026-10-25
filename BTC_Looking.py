@@ -18,104 +18,93 @@ st_autorefresh(
 
 # ================= توابع ارتباط مستقیم با API بایننس =================
 
+
 @st.cache_data(ttl=10, show_spinner=False)
 def _fetch_binance_klines_cached(symbol, interval, limit):
-    """دریافت کندل از endpointهای رسمی Binance؛ نتیجه برای ۱۰ ثانیه cache می‌شود."""
-    endpoints = [
-        "https://api.binance.com/api/v3/klines",
-        "https://api1.binance.com/api/v3/klines",
-        "https://api2.binance.com/api/v3/klines",
-        "https://api3.binance.com/api/v3/klines",
-        "https://api4.binance.com/api/v3/klines",
-    ]
-    params = {"symbol": symbol, "interval": interval, "limit": limit}
-    last_error = "هیچ endpointای پاسخ نداد."
+    """دریافت کندل‌های BTC-USDT از API عمومی OKX."""
 
-    for url in endpoints:
-        try:
-            response = requests.get(
-                url,
-                params=params,
-                timeout=(5, 12),
-                headers={"User-Agent": "BTC-Live-Radar/1.0"},
-            )
-            if response.status_code == 200:
-                payload = response.json()
-                if not isinstance(payload, list):
-                    last_error = f"{url}: پاسخ API در قالب مورد انتظار نیست."
-                    continue
-                return payload, ""
+    url = "https://www.okx.com/api/v5/market/candles"
 
-            detail = response.text[:250].replace("\\n", " ")
-            last_error = f"{url} پاسخ HTTP {response.status_code}: {detail}"
+    # تبدیل BTCUSDT به قالب نماد OKX
+    inst_id = symbol.replace("USDT", "-USDT") if "-" not in symbol else symbol
 
-            # خطاهای دسترسی/محدودیت ممکن است برای endpoint بعدی متفاوت باشند.
-            if response.status_code in (418, 429):
-                continue
-
-        except requests.Timeout:
-            last_error = f"{url}: زمان اتصال یا دریافت پاسخ تمام شد (Timeout)."
-        except requests.RequestException as exc:
-            last_error = f"{url}: خطای شبکه: {type(exc).__name__}: {exc}"
-        except ValueError:
-            last_error = f"{url}: پاسخ دریافتی JSON معتبر نبود."
-
-    return None, last_error
-
-
-def get_binance_klines_direct(symbol="BTCUSDT", interval="5m", limit=100):
-    """دریافت کندل و نگهداری پیام خطای واقعی برای نمایش در رابط کاربری."""
-    data, error = _fetch_binance_klines_cached(symbol, interval, limit)
-    st.session_state["binance_api_error"] = error
-
-    if data is None:
-        return None
+    params = {
+        "instId": inst_id,
+        "bar": interval,
+        "limit": str(min(limit, 300))
+    }
 
     try:
-        df = pd.DataFrame(data, columns=[
-            "time", "open", "high", "low", "close", "volume",
-            "close_time", "quote_volume", "trades", "taker_base",
-            "taker_quote", "ignore"
-        ])
-        for column in ("open", "high", "low", "close", "volume"):
-            df[column] = pd.to_numeric(df[column], errors="raise")
-        return df
-    except (ValueError, TypeError, KeyError) as exc:
-        st.session_state["binance_api_error"] = (
-            f"پاسخ Binance دریافت شد، اما پردازش داده‌ها ناموفق بود: "
-            f"{type(exc).__name__}: {exc}"
+        response = requests.get(
+            url,
+            params=params,
+            timeout=(5, 15),
+            headers={"User-Agent": "BTC-Live-Radar/1.0"}
         )
-        return None
 
+        if response.status_code != 200:
+            return None, (
+                f"OKX پاسخ HTTP {response.status_code}: "
+                f"{response.text[:300]}"
+            )
 
-def get_klines_10m_direct():
-    """شبیه‌سازی تایم‌فریم ۱۰ دقیقه با ترکیب دو کندل ۵ دقیقه‌ای"""
-    df_5m = get_binance_klines_direct("BTCUSDT", "5m", limit=40)
-    if df_5m is None or len(df_5m) < 10:
-        return None
+        payload = response.json()
 
-    df_5m['group'] = df_5m.index // 2
-    df_10m = df_5m.groupby('group').agg({
-        'time': 'first',
-        'open': 'first',
-        'high': 'max',
-        'low': 'min',
-        'close': 'last',
-        'volume': 'sum'
-    }).reset_index(drop=True)
-    return df_10m
+        if payload.get("code") != "0":
+            return None, (
+                f"خطای API بایننس نیست؛ پاسخ OKX: "
+                f"{payload.get('msg', 'خطای نامشخص')}"
+            )
 
+        rows = payload.get("data", [])
 
-def count_flat_candles(series):
-    """محاسبه تعداد کندل‌های متوالی بدون تغییر فلت"""
-    current_val = series.iloc[-1]
-    count = 0
-    for val in reversed(series):
-        if abs(val - current_val) < 1e-8:
-            count += 1
-        else:
-            break
-    return count
+        if not rows:
+            return None, "OKX هیچ کندلی برنگرداند."
+
+        # OKX جدیدترین کندل را ابتدا می‌دهد؛ ترتیب را زمانی می‌کنیم.
+        rows = list(reversed(rows))
+
+        interval_ms = {
+            "1m": 60_000,
+            "3m": 180_000,
+            "5m": 300_000,
+            "15m": 900_000,
+            "30m": 1_800_000
+        }.get(interval, 300_000)
+
+        # تبدیل پاسخ OKX به ساختار مورد انتظار کد فعلی
+        result = []
+
+        for row in rows:
+            if len(row) < 6:
+                continue
+
+            timestamp = int(row[0])
+
+            result.append([
+                timestamp,             # time
+                row[1],                # open
+                row[2],                # high
+                row[3],                # low
+                row[4],                # close
+                row[5],                # volume
+                timestamp + interval_ms - 1,
+                row[7] if len(row) > 7 else row[5],
+                0, 0, 0, 0
+            ])
+
+        if not result:
+            return None, "داده کندلی معتبر از OKX دریافت نشد."
+
+        return result, ""
+
+    except requests.Timeout:
+        return None, "اتصال به OKX با Timeout مواجه شد."
+    except requests.RequestException as exc:
+        return None, f"خطای شبکه OKX: {type(exc).__name__}: {exc}"
+    except (ValueError, TypeError, KeyError) as exc:
+        return None, f"خطا در پردازش پاسخ OKX: {exc}"
+
 
 
 # ================= بخش محاسبات فنی =================
