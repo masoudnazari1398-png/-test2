@@ -18,31 +18,73 @@ st_autorefresh(
 
 # ================= توابع ارتباط مستقیم با API بایننس =================
 
+@st.cache_data(ttl=10, show_spinner=False)
+def _fetch_binance_klines_cached(symbol, interval, limit):
+    """دریافت کندل از endpointهای رسمی Binance؛ نتیجه برای ۱۰ ثانیه cache می‌شود."""
+    endpoints = [
+        "https://api.binance.com/api/v3/klines",
+        "https://api1.binance.com/api/v3/klines",
+        "https://api2.binance.com/api/v3/klines",
+        "https://api3.binance.com/api/v3/klines",
+        "https://api4.binance.com/api/v3/klines",
+    ]
+    params = {"symbol": symbol, "interval": interval, "limit": limit}
+    last_error = "هیچ endpointای پاسخ نداد."
+
+    for url in endpoints:
+        try:
+            response = requests.get(
+                url,
+                params=params,
+                timeout=(5, 12),
+                headers={"User-Agent": "BTC-Live-Radar/1.0"},
+            )
+            if response.status_code == 200:
+                payload = response.json()
+                if not isinstance(payload, list):
+                    last_error = f"{url}: پاسخ API در قالب مورد انتظار نیست."
+                    continue
+                return payload, ""
+
+            detail = response.text[:250].replace("\\n", " ")
+            last_error = f"{url} پاسخ HTTP {response.status_code}: {detail}"
+
+            # خطاهای دسترسی/محدودیت ممکن است برای endpoint بعدی متفاوت باشند.
+            if response.status_code in (418, 429):
+                continue
+
+        except requests.Timeout:
+            last_error = f"{url}: زمان اتصال یا دریافت پاسخ تمام شد (Timeout)."
+        except requests.RequestException as exc:
+            last_error = f"{url}: خطای شبکه: {type(exc).__name__}: {exc}"
+        except ValueError:
+            last_error = f"{url}: پاسخ دریافتی JSON معتبر نبود."
+
+    return None, last_error
+
+
 def get_binance_klines_direct(symbol="BTCUSDT", interval="5m", limit=100):
-    """ارتباط مستقیم با API رسمی بایننس بدون نیاز به کتابخانه‌های واسطه"""
-    url = "https://api.binance.com/api/v3/klines"
-    params = {
-        "symbol": symbol,
-        "interval": interval,
-        "limit": limit
-    }
+    """دریافت کندل و نگهداری پیام خطای واقعی برای نمایش در رابط کاربری."""
+    data, error = _fetch_binance_klines_cached(symbol, interval, limit)
+    st.session_state["binance_api_error"] = error
+
+    if data is None:
+        return None
+
     try:
-        response = requests.get(url, params=params, timeout=10)
-        if response.status_code == 200:
-            data = response.json()
-            df = pd.DataFrame(data, columns=[
-                "time", "open", "high", "low", "close", "volume",
-                "close_time", "quote_volume", "trades", "taker_base", "taker_quote", "ignore"
-            ])
-            df["open"] = pd.to_numeric(df["open"])
-            df["high"] = pd.to_numeric(df["high"])
-            df["low"] = pd.to_numeric(df["low"])
-            df["close"] = pd.to_numeric(df["close"])
-            df["volume"] = pd.to_numeric(df["volume"])
-            return df
-        else:
-            return None
-    except Exception as e:
+        df = pd.DataFrame(data, columns=[
+            "time", "open", "high", "low", "close", "volume",
+            "close_time", "quote_volume", "trades", "taker_base",
+            "taker_quote", "ignore"
+        ])
+        for column in ("open", "high", "low", "close", "volume"):
+            df[column] = pd.to_numeric(df[column], errors="raise")
+        return df
+    except (ValueError, TypeError, KeyError) as exc:
+        st.session_state["binance_api_error"] = (
+            f"پاسخ Binance دریافت شد، اما پردازش داده‌ها ناموفق بود: "
+            f"{type(exc).__name__}: {exc}"
+        )
         return None
 
 
@@ -221,9 +263,13 @@ st.caption(f"به‌روزرسانی خودکار زنده (۳۰ ثانیه) | �
 btc_data = monitor_btc_ichimoku_direct()
 
 if btc_data is None:
-    st.error("❌ خطای عدم دریافت پاسخ از API رسمی بایننس!")
+    st.error("❌ دریافت داده از API بایننس ناموفق بود.")
+    api_error = st.session_state.get("binance_api_error", "جزئیات خطا در دسترس نیست.")
+    st.warning(f"جزئیات فنی: {api_error}")
     st.info(
-        "💡 **راهنمای بررسی:** لطفاً مطمئن شوید فیلترشکن ترکیه شما به درستی کار می‌کند و ترافیک اینترنت سیستم شما از آن عبور می‌کند.")
+        "این برنامه روی سرور Streamlit Cloud اجرا می‌شود؛ بنابراین فیلترشکن کامپیوتر شما روی اتصال سرور اثر ندارد. "
+        "اگر endpointهای رسمی همگی مسدود یا غیرقابل‌دسترسی باشند، باید برنامه را از محیط دیگری مانند VPS اجرا کنیم."
+    )
 else:
     # ۱. بخش کارت‌های وضعیت لایو بیت‌کوین (با استفاده از ویژگی‌های مدرن st.metric)
     col1, col2, col3 = st.columns(3)
