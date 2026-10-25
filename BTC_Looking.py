@@ -281,9 +281,10 @@ else:
     with col3:
         st.metric(label="ارزیابی ریسک", value=btc_data['risk_level'])
 
-    # نمایش روند قیمت اخیر درون expander اصلاح‌شده
+    # نمایش روند قیمت اخیر با ساختار دیتافریم استاندارد (رفع مشکل خط صاف)
     with st.expander(label="📈 نمایش روند قیمت اخیر (۱۵ کندل آخر)", expanded=False):
-        st.line_chart(btc_data['recent_prices'])
+        chart_df = pd.DataFrame({"Price": btc_data['recent_prices']})
+        st.line_chart(chart_df)
 
     st.markdown("---")
     
@@ -323,8 +324,4 @@ else:
     st.info(f"💡 **تحلیل ترکیبی ابر و خطوط:** {btc_data['ichimoku_summary']}")
     
     if "بسیار بالا" in btc_data['risk_level']:
-        st.error(btc_data['message'])
-    elif "امن" in btc_data['risk_level']:
-        st.success(btc_data['message'])
-    else:
-        st.warning(btc_data['message'])
+        st
