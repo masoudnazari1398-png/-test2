@@ -20,91 +20,72 @@ st_autorefresh(
 
 
 @st.cache_data(ttl=10, show_spinner=False)
-def _fetch_binance_klines_cached(symbol, interval, limit):
-    """دریافت کندل‌های BTC-USDT از API عمومی OKX."""
 
-    url = "https://www.okx.com/api/v5/market/candles"
+def get_binance_klines_direct(symbol="BTCUSDT", interval="5m", limit=100):
+    """دریافت کندل از OKX با حفظ سازگاری با کد قبلی."""
+    data, error = _fetch_binance_klines_cached(symbol, interval, limit)
+    st.session_state["binance_api_error"] = error
 
-    # تبدیل BTCUSDT به قالب نماد OKX
-    inst_id = symbol.replace("USDT", "-USDT") if "-" not in symbol else symbol
-
-    params = {
-        "instId": inst_id,
-        "bar": interval,
-        "limit": str(min(limit, 300))
-    }
+    if data is None:
+        return None
 
     try:
-        response = requests.get(
-            url,
-            params=params,
-            timeout=(5, 15),
-            headers={"User-Agent": "BTC-Live-Radar/1.0"}
-        )
+        columns = [
+            "time", "open", "high", "low", "close", "volume",
+            "close_time", "quote_volume", "trades",
+            "taker_base", "taker_quote", "ignore"
+        ]
+        df = pd.DataFrame(data, columns=columns)
 
-        if response.status_code != 200:
-            return None, (
-                f"OKX پاسخ HTTP {response.status_code}: "
-                f"{response.text[:300]}"
-            )
+        for col in ["open", "high", "low", "close", "volume"]:
+            df[col] = pd.to_numeric(df[col], errors="raise")
 
-        payload = response.json()
+        return df
 
-        if payload.get("code") != "0":
-            return None, (
-                f"خطای API بایننس نیست؛ پاسخ OKX: "
-                f"{payload.get('msg', 'خطای نامشخص')}"
-            )
-
-        rows = payload.get("data", [])
-
-        if not rows:
-            return None, "OKX هیچ کندلی برنگرداند."
-
-        # OKX جدیدترین کندل را ابتدا می‌دهد؛ ترتیب را زمانی می‌کنیم.
-        rows = list(reversed(rows))
-
-        interval_ms = {
-            "1m": 60_000,
-            "3m": 180_000,
-            "5m": 300_000,
-            "15m": 900_000,
-            "30m": 1_800_000
-        }.get(interval, 300_000)
-
-        # تبدیل پاسخ OKX به ساختار مورد انتظار کد فعلی
-        result = []
-
-        for row in rows:
-            if len(row) < 6:
-                continue
-
-            timestamp = int(row[0])
-
-            result.append([
-                timestamp,             # time
-                row[1],                # open
-                row[2],                # high
-                row[3],                # low
-                row[4],                # close
-                row[5],                # volume
-                timestamp + interval_ms - 1,
-                row[7] if len(row) > 7 else row[5],
-                0, 0, 0, 0
-            ])
-
-        if not result:
-            return None, "داده کندلی معتبر از OKX دریافت نشد."
-
-        return result, ""
-
-    except requests.Timeout:
-        return None, "اتصال به OKX با Timeout مواجه شد."
-    except requests.RequestException as exc:
-        return None, f"خطای شبکه OKX: {type(exc).__name__}: {exc}"
     except (ValueError, TypeError, KeyError) as exc:
-        return None, f"خطا در پردازش پاسخ OKX: {exc}"
+        st.session_state["binance_api_error"] = (
+            f"خطا در پردازش داده‌های OKX: {exc}"
+        )
+        return None
 
+
+def get_klines_10m_direct():
+    """ساخت کندل ۱۰ دقیقه‌ای از دو کندل ۵ دقیقه‌ای."""
+    df = get_binance_klines_direct("BTCUSDT", "5m", limit=40)
+
+    if df is None or len(df) < 10:
+        return None
+
+    df = df.copy()
+    df["group"] = range(len(df))
+    df["group"] = df["group"] // 2
+
+    result = df.groupby("group", sort=True).agg({
+        "time": "first",
+        "open": "first",
+        "high": "max",
+        "low": "min",
+        "close": "last",
+        "volume": "sum"
+    }).reset_index(drop=True)
+
+    return result
+
+
+def count_flat_candles(series):
+    """شمارش کندل‌های متوالی که مقدار خط تغییر نکرده است."""
+    if series is None or series.empty:
+        return 0
+
+    current_val = series.iloc[-1]
+    count = 0
+
+    for val in reversed(series.tolist()):
+        if pd.isna(val) or abs(val - current_val) >= 1e-8:
+            break
+        count += 1
+
+    return count
 
 
 # ================= بخش محاسبات فنی =================
