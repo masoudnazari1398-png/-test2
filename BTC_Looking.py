@@ -4,22 +4,60 @@ import requests
 import time
 from streamlit_autorefresh import st_autorefresh
 
+# ================= تنظیمات صفحه =================
 st.set_page_config(
-    page_title="BTC Live Radar (OKX API)",
+    page_title="BTC Live Radar | OKX API",
+    page_icon="🛰️",
     layout="wide"
 )
 
+# ================= استایل‌های سفارشی برای ظاهر مرتب و حرفه‌ای =================
+st.markdown("""
+    <style>
+    .main-title {
+        font-size: 26px;
+        font-weight: 700;
+        color: #FAFAFA;
+        margin-bottom: 0px;
+    }
+    .sub-caption {
+        color: #888888;
+        font-size: 14px;
+        margin-bottom: 20px;
+    }
+    .metric-card {
+        background-color: #1E1E1E;
+        border: 1px solid #333333;
+        padding: 15px;
+        border-radius: 10px;
+        text-align: center;
+    }
+    .alert-box-red {
+        background-color: rgba(231, 76, 60, 0.1);
+        border-left: 5px solid #e74c3c;
+        padding: 15px;
+        border-radius: 8px;
+        margin-bottom: 10px;
+        color: #ff6b6b;
+    }
+    .alert-box-green {
+        background-color: rgba(46, 204, 113, 0.1);
+        border-left: 5px solid #2ecc71;
+        padding: 15px;
+        border-radius: 8px;
+        margin-bottom: 10px;
+        color: #2ecc71;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
 # ================= تنظیمات رفرش خودکار (هر ۳۰ ثانیه) =================
-st_autorefresh(
-    interval=30000,
-    key="btc_radar_refresh"
-)
+st_autorefresh(interval=30000, key="btc_radar_refresh")
 
 
-# ================= تابع کش‌شده ارتباط با API صرافی OKX =================
+# ================= تابع ارتباط با API صرافی OKX =================
 @st.cache_data(ttl=10, show_spinner=False)
 def _fetch_okx_klines_cached(symbol="BTC-USDT", bar="5m", limit=100):
-    """دریافت داده‌های کندل از API عمومی و بدون تحریم OKX"""
     url = "https://www.okx.com/api/v5/market/candles"
     params = {"instId": symbol, "bar": bar, "limit": limit}
     try:
@@ -36,23 +74,18 @@ def _fetch_okx_klines_cached(symbol="BTC-USDT", bar="5m", limit=100):
         return None, f"خطای اتصال به شبکه: {e}"
 
 
-# ================= توابع پردازش داده =================
 def get_binance_klines_direct(symbol="BTCUSDT", interval="5m", limit=100):
-    # تبدیل نام‌ایستگاه به فرمت OKX (مثلاً BTCUSDT به BTC-USDT)
     okx_symbol = "BTC-USDT" if "BTC" in symbol else symbol
-    
-    # تبدیل تایم‌فریم‌های بایننس به فرمت OKX
     bar_mapping = {"5m": "5m", "10m": "10m", "15m": "15m", "1h": "1H"}
     bar = bar_mapping.get(interval, "5m")
 
     data, error = _fetch_okx_klines_cached(okx_symbol, bar, limit)
-    st.session_state["binance_api_error"] = error
+    st.session_state["api_error"] = error
 
     if data is None:
         return None
 
     try:
-        # ساختار داده‌های OKX: [timestamp, open, high, low, close, volume, ...]
         columns = [
             "time", "open", "high", "low", "close", 
             "volume", "volCcy", "volCcyQuote", "confirm"
@@ -62,19 +95,16 @@ def get_binance_klines_direct(symbol="BTCUSDT", interval="5m", limit=100):
         for col in ["open", "high", "low", "close", "volume"]:
             df[col] = pd.to_numeric(df[col], errors="raise")
 
-        # OKX داده‌ها را از جدید به قدیم برمی‌گرداند؛ برای محاسبات تکنیکال معکوس می‌کنیم (قدیم به جدید)
         df = df.iloc[::-1].reset_index(drop=True)
         return df
 
     except (ValueError, TypeError, KeyError) as exc:
-        st.session_state["binance_api_error"] = f"خطا در پردازش داده‌ها: {exc}"
+        st.session_state["api_error"] = f"خطا در پردازش داده‌ها: {exc}"
         return None
 
 
 def get_klines_10m_direct():
-    """ساخت کندل ۱۰ دقیقه‌ای از دو کندل ۵ دقیقه‌ای."""
     df = get_binance_klines_direct("BTCUSDT", "5m", limit=40)
-
     if df is None or len(df) < 10:
         return None
 
@@ -95,22 +125,18 @@ def get_klines_10m_direct():
 
 
 def count_flat_candles(series):
-    """شمارش کندل‌های متوالی که مقدار خط تغییر نکرده است."""
     if series is None or series.empty:
         return 0
-
     current_val = series.iloc[-1]
     count = 0
-
     for val in reversed(series.tolist()):
         if pd.isna(val) or abs(val - current_val) >= 1e-8:
             break
         count += 1
-
     return count
 
 
-# ================= بخش محاسبات فنی =================
+# ================= محاسبات فنی =================
 
 def monitor_btc_ichimoku_direct():
     df_btc = get_binance_klines_direct("BTCUSDT", "15m", limit=100)
@@ -120,10 +146,8 @@ def monitor_btc_ichimoku_direct():
     current_price = df_btc['close'].iloc[-1]
     prev_close = df_btc['close'].iloc[-2]
     change_pct = ((current_price - prev_close) / prev_close) * 100
-
     recent_prices = df_btc['close'].tail(15).tolist()
 
-    # محاسبات ایچیموکو
     high_9 = df_btc['high'].rolling(window=9).max()
     low_9 = df_btc['low'].rolling(window=9).min()
     tenkan = (high_9 + low_9) / 2
@@ -148,35 +172,35 @@ def monitor_btc_ichimoku_direct():
     k_val = kijun.iloc[-1]
 
     if current_price > max(span_a_current, span_b_current):
-        kumo_status = "🟢 بالای ابر کومو (روند صعودی)"
+        kumo_status = "🟢 بالای ابر کومو (صعودی)"
     elif current_price < min(span_a_current, span_b_current):
-        kumo_status = "🔴 زیر ابر کومو (روند نزولی)"
+        kumo_status = "🔴 زیر ابر کومو (نزولی)"
     else:
-        kumo_status = "🟡 داخل ابر کومو (روند رنج)"
+        kumo_status = "🟡 داخل ابر کومو (رنج)"
 
     tk_cross = "📈 صعودی (تنکان بالای کیجون)" if t_val > k_val else "📉 نزولی (تنکان زیر کیجون)"
 
     flat_analysis = []
     if kijun_flat_count >= 3:
-        flat_analysis.append(f"🧲 کیجون‌سن به مدت {kijun_flat_count} کندل فلت است")
+        flat_analysis.append(f"🧲 کیجون‌سن ({kijun_flat_count} کندل فلت)")
     if tenkan_flat_count >= 3:
-        flat_analysis.append(f"⏸️ تنکان‌سن به مدت {tenkan_flat_count} کندل فلت است")
+        flat_analysis.append(f"⏸️ تنکان‌سن ({tenkan_flat_count} کندل فلت)")
 
-    flat_msg = " | ".join(flat_analysis) if flat_analysis else "خطوط در حال حرکت پویا"
-    ichimoku_analysis = f"موقعیت: {kumo_status} | خطوط: {tk_cross} | وضعیت فلت: {flat_msg}"
+    flat_msg = " | ".join(flat_analysis) if flat_analysis else "بدون فلت سنگین"
+    ichimoku_analysis = f"موقعیت: {kumo_status} | خطوط: {tk_cross} | {flat_msg}"
 
     if current_price < min(span_a_current, span_b_current) and t_val < k_val:
         status = "🔴 BEARISH"
-        risk_level = "VERY HIGH RISK"
-        message = "ساختار تکنیکال لیدر در تایم‌فریم ۱۵ دقیقه کاملاً ریزشی است."
+        risk_level = "ریسک بسیار بالا"
+        message = "ساختار تکنیکال در تایم‌فریم ۱۵ دقیقه نزولی است."
     elif current_price > max(span_a_current, span_b_current) and t_val > k_val:
         status = "🟢 BULLISH"
-        risk_level = "LOW RISK"
-        message = "ساختار تکنیکال لیدر در تایم‌فریم ۱۵ دقیقه کاملاً صعودی و ایمن است."
+        risk_level = "امن / صعودی"
+        message = "ساختار تکنیکال در تایم‌فریم ۱۵ دقیقه کاملاً صعودی است."
     else:
         status = "🟡 SIDEWAYS"
-        risk_level = "MODERATE / RANGE"
-        message = "بیت‌کوین در وضعیت نوسانی و رنج است؛ مراقب کشش خطوط فلت باشید."
+        risk_level = "متوسط / نوسانی"
+        message = "بازار در حالت نوسانی و رنج قرار دارد."
 
     return {
         "price": current_price,
@@ -196,9 +220,7 @@ def monitor_btc_ichimoku_direct():
 
 
 def check_btc_unusual_volume_direct():
-    """رادار پایش حجم غیرمتعارف و کندل‌های پوشا روی API صرافی OKX"""
     volume_alerts = []
-
     for tf in ["5m", "10m", "15m"]:
         if tf == "10m":
             df_btc = get_klines_10m_direct()
@@ -221,7 +243,6 @@ def check_btc_unusual_volume_direct():
         prev_min_low = prev_candles['low'].min()
 
         volume_ratio = current_volume / avg_prev_volume if avg_prev_volume > 0 else 0
-
         is_volume_explosive = volume_ratio >= 3.0
         is_price_engulfing = (current_high >= prev_max_high) and (current_low <= prev_min_low)
 
@@ -239,91 +260,71 @@ def check_btc_unusual_volume_direct():
     return volume_alerts
 
 
-# ================= رابط کاربری Streamlit =================
+# ================= رابط کاربری (UI) مرتب و تمیز =================
 
-st.title("🛰️ رادار لایو بازار: حجم‌های غیرمتعارف و ایچیموکو بیت‌کوین")
-st.caption(f"به‌روزرسانی خودکار زنده (۳۰ ثانیه) | زمان سیستم: {time.strftime('%H:%M:%S')}")
+st.markdown('<p class="main-title">🛰️ رادار زنده بازار بیت‌کوین (ایچیموکو و حجم‌های غیرمتعارف)</p>', unsafe_allow_html=True)
+st.markdown(f'<p class="sub-caption">آخرین بروزرسانی خودکار: {time.strftime("%H:%M:%S")} (منبع: OKX API)</p>', unsafe_allow_html=True)
 
 btc_data = monitor_btc_ichimoku_direct()
 
 if btc_data is None:
-    st.error("❌ دریافت داده از API صرافی ناموفق بود.")
-    api_error = st.session_state.get("binance_api_error", "جزئیات خطا در دسترس نیست.")
-    st.warning(f"جزئیات فنی: {api_error}")
+    st.error("❌ دریافت داده از سرور صرافی ناموفق بود.")
+    api_error = st.session_state.get("api_error", "خطای ناشناخته")
+    st.warning(f"جزئیات خطا: {api_error}")
 else:
+    # بخش متریک‌ها به صورت کارت‌های منظم
     col1, col2, col3 = st.columns(3)
     with col1:
-        st.metric(
-            label="قیمت لحظه‌ای بیت‌کوین (BTC/USDT)",
-            value=f"${btc_data['price']:,}",
-            delta=f"{btc_data['change_pct']}%",
-            border=True
-        )
+        st.metric(label="قیمت لحظه‌ای بیت‌کوین", value=f"${btc_data['price']:,}", delta=f"{btc_data['change_pct']}%")
     with col2:
-        st.metric(
-            label="ساختار حرکتی لیدر",
-            value=btc_data['status'],
-            border=True
-        )
+        st.metric(label="وضعیت بازار", value=btc_data['status'])
     with col3:
-        risk_color = "red" if "VERY HIGH" in btc_data['risk_level'] else "green" if "LOW" in btc_data['risk_level'] else "orange"
-        st.markdown(
-            f"سطح ریسک بازار: <span style='color:{risk_color}; font-weight:bold;'>{btc_data['risk_level']}</span>",
-            unsafe_allow_html=True
-        )
+        st.metric(label="ارزیابی ریسک", value=btc_data['risk_level'])
 
-    st.line_chart(btc_data['recent_prices'])
+    # نمایش نمودار روند قیمت اخیر به شکلی مرتب
+    with st.exparger(label="📈 نمایش روند قیمت اخیر (۱۵ کندل آخر)", expanded=False) if hasattr(st, 'expander') else st.container():
+        st.line_chart(btc_data['recent_prices'])
 
     st.markdown("---")
-    st.subheader("🔥 رادار حجم‌های غیرمتعارف و انفجاری بیت‌کوین (5m - 10m - 15m)")
-
-    with st.spinner("در حال پایش زنده حجم معاملات..."):
+    
+    # بخش رادار حجم‌های غیرمتعارف
+    st.subheader("🔥 رادار حجم‌های انفجاری و پوشا (5m - 10m - 15m)")
+    
+    with st.spinner("در حال پایش زنده بازار..."):
         btc_alerts = check_btc_unusual_volume_direct()
 
         if btc_alerts:
             for alert in btc_alerts:
-                bg_color = "rgba(231, 76, 60, 0.1)" if "🔴" in alert['direction'] else "rgba(46, 204, 113, 0.1)"
-                border_color = "#e74c3c" if "🔴" in alert['direction'] else "#2ecc71"
-                text_color = "#e74c3c" if "🔴" in alert['direction'] else "#2ecc71"
-
-                st.markdown(
-                    f"""
-                    <div style="background-color: {bg_color}; padding: 15px; border-radius: 8px; 
-                                border-left: 5px solid {border_color}; margin-bottom: 10px;">
-                        <h4 style="margin: 0; color: {text_color}; font-weight: bold;">🚨 هشدار حرکت غیرمتعارف و حجم انفجاری در تایم‌فریم {alert['timeframe']}</h4>
-                        <p style="margin: 5px 0 0 0; font-size: 15px; color: #111;">
-                            جهت حرکت کندل: <b>{alert['direction']}</b> | 
-                            قیمت بیت‌کوین: <b>${alert['current_price']:,}</b> | 
-                            حجم معاملات این کندل: <span style="font-weight: bold; color: {text_color};">{alert['volume_ratio']} برابر میانگین ۳ کندل قبلی! (به همراه پوشش کامل بدنه)</span>
-                        </p>
+                box_class = "alert-box-red" if "🔴" in alert['direction'] else "alert-box-green"
+                st.markdown(f"""
+                    <div class="{box_class}">
+                        <b>🚨 هشدار در تایم‌فریم {alert['timeframe']}</b><br>
+                        جهت: {alert['direction']} | قیمت: ${alert['current_price']:,} | حجم: {alert['volume_ratio']} برابر میانگین قبلی
                     </div>
-                    """,
-                    unsafe_allow_html=True
-                )
+                """, unsafe_allow_html=True)
         else:
-            st.success("✅ حجم معاملات بیت‌کوین در تایم‌فریم‌های کوتاه‌مدت (۵، ۱۰ و ۱۵ دقیقه) کاملاً آرام و نرمال است.")
+            st.success("✅ حجم معاملات در تایم‌فریم‌های کوتاه‌مدت آرام و عادی است.")
 
     st.markdown("---")
-    st.subheader("📊 محاسبات لایو فلت‌های ایچیموکو بیت‌کوین (تایم‌فریم 15 دقیقه)")
+    
+    # بخش ایچیموکو در کارهای جداگانه و مرتب
+    st.subheader("📊 وضعیت خطوط کلیدی ایچیموکو (تایم‌فریم ۱۵ دقیقه)")
 
-    col_ich1, col_ich2, col_ich3, col_ich4 = st.columns(4)
-    with col_ich1:
-        st.metric(label="خط تنکان‌سن", value=btc_data['tenkan'], delta=f"فلت برای {btc_data['tenkan_flat']} کندل",
-                  delta_color="off", border=True)
-    with col_ich2:
-        st.metric(label="خط کیجون‌سن (جذب آهنربایی)", value=btc_data['kijun'],
-                  delta=f"فلت برای {btc_data['kijun_flat']} کندل",
-                  delta_color="inverse" if btc_data['kijun_flat'] >= 4 else "off", border=True)
-    with col_ich3:
-        st.info(f"**سنکو اسپان آ:** {btc_data['span_a']}")
-    with col_ich4:
-        st.info(f"**سنکو اسپان ب:** {btc_data['span_b']}")
+    ich_col1, ich_col2, ich_col3, ich_col4 = st.columns(4)
+    with ich_col1:
+        st.metric(label="تنکان‌سن", value=btc_data['tenkan'], delta=f"{btc_data['tenkan_flat']} کندل فلت")
+    with ich_col2:
+        st.metric(label="کیجون‌سن", value=btc_data['kijun'], delta=f"{btc_data['kijun_flat']} کندل فلت")
+    with ich_col3:
+        st.metric(label="سنکو اسپان آ", value=btc_data['span_a'])
+    with ich_col4:
+        st.metric(label="سنکو اسپان ب", value=btc_data['span_b'])
 
-    st.markdown(f"⚡ **وضعیت ابر کومو و خطوط:** `{btc_data['ichimoku_summary']}`")
-
-    if "VERY HIGH" in btc_data['risk_level']:
-        st.error(f"⚠️ {btc_data['message']}")
-    elif "LOW" in btc_data['risk_level']:
-        st.success(f"✅ {btc_data['message']}")
+    st.info(f"💡 **تحلیل ترکیبی ابر و خطوط:** {btc_data['ichimoku_summary']}")
+    
+    if "بسیار بالا" in btc_data['risk_level']:
+        st.error(btc_data['message'])
+    elif "امن" in btc_data['risk_level']:
+        st.success(btc_data['message'])
     else:
-        st.warning(f"ℹ️ {btc_data['message']}")
+        st.warning(btc_data['message'])
